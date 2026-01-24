@@ -40,8 +40,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 once_cell = "1"
 
-# Browser automation - chaser_oxide fork with stealth features
-chaser-oxide = { git = "https://github.com/ccheshirecat/chaser-oxide", branch = "main" }
 
 # Async utilities
 futures = "0.3"
@@ -53,6 +51,7 @@ base64 = "0.22"
 axum = { version = "0.7", optional = true }
 tower = { version = "0.4", optional = true }
 tower-http = { version = "0.5", features = ["cors", "trace", "timeout"], optional = true }
+chaser-oxide = "0.1.1"
 
 [build-dependencies]
 cbindgen = "0.26"

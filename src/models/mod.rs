@@ -60,14 +60,10 @@ impl ProxyConfig {
         self
     }
 
-    /// Get proxy URL in format http://host:port or http://user:pass@host:port
+    /// Get proxy URL in format http://host:port
+    /// Note: Chrome/CDP doesn't support inline authentication in proxy URLs
     pub fn to_url(&self) -> String {
-        match (&self.username, &self.password) {
-            (Some(user), Some(pass)) => {
-                format!("http://{}:{}@{}:{}", user, pass, self.host, self.port)
-            }
-            _ => format!("http://{}:{}", self.host, self.port),
-        }
+        format!("http://{}:{}", self.host, self.port)
     }
 }
 

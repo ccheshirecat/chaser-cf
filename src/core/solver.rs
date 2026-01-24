@@ -4,6 +4,7 @@ use super::BrowserManager;
 use crate::error::{ChaserError, ChaserResult};
 use crate::models::{Cookie, Profile, ProxyConfig, WafSession};
 
+use chaser_oxide::auth::Credentials;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -30,6 +31,19 @@ pub async fn get_source(
     let page = manager
         .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
         .await?;
+
+    // Set up proxy authentication if credentials provided
+    if let Some(ref p) = proxy {
+        if let (Some(username), Some(password)) = (&p.username, &p.password) {
+            page
+                .authenticate(Credentials {
+                    username: username.clone(),
+                    password: password.clone(),
+                })
+                .await
+                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
+        }
+    }
 
     // Navigate and wait for load
     page.goto(url)
@@ -79,6 +93,19 @@ pub async fn solve_waf_session(
     let page = manager
         .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
         .await?;
+
+    // Set up proxy authentication if credentials provided
+    if let Some(ref p) = proxy {
+        if let (Some(username), Some(password)) = (&p.username, &p.password) {
+            page
+                .authenticate(Credentials {
+                    username: username.clone(),
+                    password: password.clone(),
+                })
+                .await
+                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
+        }
+    }
 
     // First, get Accept-Language via httpbin
     let accept_language = get_accept_language(&page).await.unwrap_or_default();
@@ -166,6 +193,19 @@ pub async fn solve_turnstile_max(
         .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
         .await?;
 
+    // Set up proxy authentication if credentials provided
+    if let Some(ref p) = proxy {
+        if let (Some(username), Some(password)) = (&p.username, &p.password) {
+            page
+                .authenticate(Credentials {
+                    username: username.clone(),
+                    password: password.clone(),
+                })
+                .await
+                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
+        }
+    }
+
     // Inject token extraction script before navigation
     page.evaluate_on_new_document(TURNSTILE_EXTRACTOR_SCRIPT)
         .await
@@ -206,13 +246,26 @@ pub async fn solve_turnstile_min(
     // Create context with proxy if provided
     let ctx_id = manager.create_context(proxy.as_ref()).await?;
 
-    // Prepare fake page HTML with site key
-    let fake_html = FAKE_PAGE_HTML.replace("<site-key>", site_key);
-
     // Create page in context with the specified profile
     let page = manager
         .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
         .await?;
+
+    // Set up proxy authentication if credentials provided
+    if let Some(ref p) = proxy {
+        if let (Some(username), Some(password)) = (&p.username, &p.password) {
+            page
+                .authenticate(Credentials {
+                    username: username.clone(),
+                    password: password.clone(),
+                })
+                .await
+                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
+        }
+    }
+
+    // Prepare fake page HTML with site key
+    let fake_html = FAKE_PAGE_HTML.replace("<site-key>", site_key);
 
     // Wrap in ChaserPage for request interception API
     let chaser = chaser_oxide::ChaserPage::new(page.clone());
