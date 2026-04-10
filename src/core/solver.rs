@@ -346,7 +346,6 @@ const TURNSTILE_EXTRACTOR_SCRIPT: &str = r#"
 "#;
 
 /// Wait for Turnstile token to be available
-/// Uses evaluate_main() because window.turnstile is set by page scripts (main world)
 async fn wait_for_turnstile_token(
     page: &chaser_oxide::Page,
     timeout_seconds: u64,
@@ -364,9 +363,8 @@ async fn wait_for_turnstile_token(
             ));
         }
 
-        // Try to get the token - MUST use main world because window.turnstile is there
         let result = chaser
-            .evaluate_main(
+            .evaluate(
                 r#"
                 (function() {
                     // First check if turnstile object exists and has a response
@@ -395,7 +393,6 @@ async fn wait_for_turnstile_token(
 }
 
 /// Get Accept-Language header via httpbin
-/// Uses stealth evaluation (isolated world) - fetch works there
 async fn get_accept_language(page: &chaser_oxide::Page) -> Option<String> {
     let chaser = chaser_oxide::ChaserPage::new(page.clone());
     
