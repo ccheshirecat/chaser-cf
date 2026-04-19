@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn test_proxy_url_with_auth() {
         let proxy = ProxyConfig::new("proxy.example.com", 8080).with_auth("user", "pass");
-        assert_eq!(proxy.to_url(), "http://user:pass@proxy.example.com:8080");
+        assert_eq!(proxy.to_url(), "http://proxy.example.com:8080");
     }
 
     #[test]

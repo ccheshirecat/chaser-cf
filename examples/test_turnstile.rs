@@ -1,92 +1,174 @@
-//! Test Turnstile solving against winna.com
+use chaser_cf::{ChaserCF, ChaserConfig, ProxyConfig};
+use std::env;
 
-use chaser_cf::{ChaserCF, ChaserConfig, Profile};
-
-const TARGET_URL: &str = "https://winna.com";
-const SITE_KEY: &str = "0x4AAAAAACHcU3E6UUbmv3p-";
+fn usage() {
+    eprintln!("Usage: test_turnstile <url> [options]");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --proxy <host:port>         Proxy address");
+    eprintln!("  --proxy-auth <user:pass>    Proxy credentials");
+    eprintln!("  --headless                  Run headless");
+    eprintln!("  --site-key <key>            Turnstile site key (enables min mode)");
+    eprintln!("  --timeout <ms>              Timeout in ms (default: 120000)");
+    eprintln!("  --mode <waf|min|max|all>    What to solve (default: waf)");
+    eprintln!();
+    eprintln!("Examples:");
+    eprintln!("  test_turnstile https://stake.com");
+    eprintln!("  test_turnstile https://stake.com --headless --mode waf");
+    eprintln!("  test_turnstile https://winna.com --site-key 0x4AA... --mode min");
+    eprintln!("  test_turnstile https://stake.com --proxy 1.2.3.4:8080 --proxy-auth user:pass");
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing for debug output
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
+        usage();
+        return Ok(());
+    }
+
+    let url = args[1].clone();
+
+    let mut headless = false;
+    let mut proxy_addr: Option<String> = None;
+    let mut proxy_auth: Option<(String, String)> = None;
+    let mut site_key: Option<String> = None;
+    let mut timeout_ms: u64 = 120_000;
+    let mut mode = "waf".to_string();
+
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--headless" => headless = true,
+            "--proxy" => {
+                i += 1;
+                proxy_addr = Some(args[i].clone());
+            }
+            "--proxy-auth" => {
+                i += 1;
+                let parts: Vec<&str> = args[i].splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    proxy_auth = Some((parts[0].to_string(), parts[1].to_string()));
+                } else {
+                    eprintln!("Invalid proxy-auth format, expected user:pass");
+                    return Ok(());
+                }
+            }
+            "--site-key" => {
+                i += 1;
+                site_key = Some(args[i].clone());
+            }
+            "--timeout" => {
+                i += 1;
+                timeout_ms = args[i].parse().unwrap_or(120_000);
+            }
+            "--mode" => {
+                i += 1;
+                mode = args[i].clone();
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                usage();
+                return Ok(());
+            }
+        }
+        i += 1;
+    }
+
     tracing_subscriber::fmt()
-        .with_env_filter("chaser_cf=debug,chaser_oxide=debug")
+        .with_env_filter("chaser_cf=debug,chaser_oxide=info")
         .init();
 
-    println!("===========================================");
-    println!("  chaser-cf - Turnstile Test");
-    println!("  Target: {}", TARGET_URL);
-    println!("  SiteKey: {}", SITE_KEY);
-    println!("===========================================\n");
+    let proxy = proxy_addr.map(|addr| {
+        let parts: Vec<&str> = addr.rsplitn(2, ':').collect();
+        let port: u16 = parts[0].parse().unwrap_or(8080);
+        let host = parts.get(1).copied().unwrap_or(&addr).to_string();
+        let mut p = ProxyConfig::new(host, port);
+        if let Some((user, pass)) = proxy_auth {
+            p = p.with_auth(user, pass);
+        }
+        p
+    });
 
-    // Create config - not headless so we can see what's happening
     let config = ChaserConfig::default()
-        .with_profile(Profile::Windows)
-        .with_timeout_ms(120000) // 2 minute timeout
-        .with_headless(false);
+        .with_timeout_ms(timeout_ms)
+        .with_headless(headless);
 
-    println!("[1/4] Initializing chaser-cf...");
+    println!("Target : {url}");
+    println!("Mode   : {mode}");
+    println!("Headless: {headless}");
+    if let Some(ref p) = proxy {
+        println!("Proxy  : {}", p.to_url());
+    }
+    println!();
+
     let chaser = ChaserCF::new(config).await?;
-    println!("[1/4] chaser-cf initialized!\n");
 
-    // Test 1: Turnstile Min (lightweight, uses sitekey)
-    println!("[2/4] Testing turnstile-min mode...");
-    println!("      URL: {}", TARGET_URL);
-    println!("      SiteKey: {}\n", SITE_KEY);
-
-    match chaser.solve_turnstile_min(TARGET_URL, SITE_KEY, None).await {
-        Ok(token) => {
-            println!("[2/4] SUCCESS! Token received:");
-            println!("      Length: {} chars", token.len());
-            println!("      Preview: {}...", &token[..token.len().min(50)]);
+    match mode.as_str() {
+        "min" => {
+            let key = site_key.as_deref().unwrap_or_else(|| {
+                eprintln!("--site-key required for min mode");
+                std::process::exit(1);
+            });
+            run_turnstile_min(&chaser, &url, key, proxy).await;
         }
-        Err(e) => {
-            println!("[2/4] FAILED: {}", e);
-            println!("      Trying turnstile-max mode instead...\n");
-
-            // Test 2: Turnstile Max (full page load)
-            println!("[3/4] Testing turnstile-max mode...");
-            match chaser.solve_turnstile(TARGET_URL, None).await {
-                Ok(token) => {
-                    println!("[3/4] SUCCESS! Token received:");
-                    println!("      Length: {} chars", token.len());
-                    println!("      Preview: {}...", &token[..token.len().min(50)]);
-                }
-                Err(e) => {
-                    println!("[3/4] FAILED: {}", e);
-                }
+        "max" => run_turnstile_max(&chaser, &url, proxy).await,
+        "waf" => run_waf_session(&chaser, &url, proxy).await,
+        "all" => {
+            if let Some(ref key) = site_key {
+                run_turnstile_min(&chaser, &url, key, proxy.clone()).await;
             }
+            run_turnstile_max(&chaser, &url, proxy.clone()).await;
+            run_waf_session(&chaser, &url, proxy).await;
+        }
+        other => {
+            eprintln!("Unknown mode: {other}. Use waf, min, max, or all.");
         }
     }
 
-    // Test 3: WAF Session
-    println!("\n[4/4] Testing WAF session extraction...");
-    match chaser.solve_waf_session(TARGET_URL, None).await {
-        Ok(session) => {
-            println!("[4/4] SUCCESS! Session received:");
-            println!("      Cookies: {}", session.cookies.len());
-            for cookie in &session.cookies {
-                println!(
-                    "        - {}: {}...",
-                    cookie.name,
-                    &cookie.value[..cookie.value.len().min(20)]
-                );
-            }
-            println!("      Headers: {}", session.headers.len());
-            for (k, v) in &session.headers {
-                println!("        - {}: {}...", k, &v[..v.len().min(50)]);
-            }
-        }
-        Err(e) => {
-            println!("[4/4] FAILED: {}", e);
-        }
-    }
-
-    println!("\n===========================================");
-    println!("  Test Complete!");
-    println!("===========================================");
-
-    // Cleanup
     chaser.shutdown().await;
-
     Ok(())
+}
+
+async fn run_waf_session(chaser: &ChaserCF, url: &str, proxy: Option<ProxyConfig>) {
+    println!("── WAF session ──");
+    match chaser.solve_waf_session(url, proxy).await {
+        Ok(session) => {
+            println!("OK — {} cookies", session.cookies.len());
+            for c in &session.cookies {
+                let preview = &c.value[..c.value.len().min(40)];
+                println!("  {} = {}…", c.name, preview);
+            }
+            for (k, v) in &session.headers {
+                println!("  {k}: {v}");
+            }
+        }
+        Err(e) => println!("FAIL — {e}"),
+    }
+    println!();
+}
+
+async fn run_turnstile_max(chaser: &ChaserCF, url: &str, proxy: Option<ProxyConfig>) {
+    println!("── Turnstile max ──");
+    match chaser.solve_turnstile(url, proxy).await {
+        Ok(token) => {
+            println!("OK — {} chars", token.len());
+            println!("  {}…", &token[..token.len().min(60)]);
+        }
+        Err(e) => println!("FAIL — {e}"),
+    }
+    println!();
+}
+
+async fn run_turnstile_min(chaser: &ChaserCF, url: &str, site_key: &str, proxy: Option<ProxyConfig>) {
+    println!("── Turnstile min (key: {site_key}) ──");
+    match chaser.solve_turnstile_min(url, site_key, proxy).await {
+        Ok(token) => {
+            println!("OK — {} chars", token.len());
+            println!("  {}…", &token[..token.len().min(60)]);
+        }
+        Err(e) => println!("FAIL — {e}"),
+    }
+    println!();
 }

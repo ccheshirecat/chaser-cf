@@ -1,79 +1,60 @@
 # chaser-cf
 
-High-performance Cloudflare bypass library with stealth browser automation. Rust-native with C FFI bindings.
+Cloudflare bypass library powered by stealth browser automation. No captcha API tokens needed — pure browser-based challenge solving with C FFI bindings for use from any language.
+
+## How it works
+
+- Launches a real Chrome instance with a native fingerprint (OS, RAM, UA, Client Hints all consistent)
+- For WAF/managed challenges: polls for `cf_clearance` and clicks the Turnstile checkbox via CDP shadow-root traversal — Cloudflare's widget lives inside a closed shadow root that JS can't reach, but CDP can
+- For Turnstile tokens: injects an extractor script and optionally intercepts the page request to serve a minimal HTML stub, reducing load time and noise
+- Built on [chaser-oxide](https://github.com/ccheshirecat/chaser-oxide), a stealth fork of chromiumoxide
 
 ## Features
 
-- **WAF Session**: Extract cookies and headers for authenticated requests
-- **Turnstile Solver**: Solve Cloudflare Turnstile captchas (min and max modes)
-- **Page Source**: Get HTML source from Cloudflare-protected pages
-- **Stealth Profiles**: Windows, Linux, macOS fingerprint profiles
-- **C FFI Bindings**: Use from Python, Go, Node.js, C/C++, and more
-- **Low Memory**: ~50-100MB footprint vs ~500MB+ for Node.js alternatives
+- **WAF Session** — extracts `cf_clearance` + `user-agent` for use in subsequent HTTP requests
+- **Turnstile max** — solves Turnstile with full page load (no site key needed)
+- **Turnstile min** — solves Turnstile with request interception, much faster (site key required)
+- **Page source** — returns HTML after challenge is cleared
+- **Proxy support** — per-request proxy with optional auth
+- **C FFI** — use from Python, Go, Node.js, C/C++, etc.
+- **HTTP server** — optional REST API (feature-flagged)
 
 ## Installation
-
-### As a Rust Library
-
-Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 chaser-cf = { git = "https://github.com/ccheshirecat/chaser-cf" }
 ```
 
-### Building from Source
-
-```bash
-git clone https://github.com/ccheshirecat/chaser-cf
-cd chaser-cf
-
-# Build library only
-cargo build --release
-
-# Build with HTTP server
-cargo build --release --features http-server
-
-# Generate C headers
-cargo build --release  # Headers generated to include/chaser_cf.h
-```
-
-### Docker
-
-```bash
-docker build -t chaser-cf .
-docker run -d -p 3000:3000 chaser-cf
-```
+Requires Chrome or Chromium installed on the system.
 
 ## Usage
 
 ### Rust
 
 ```rust
-use chaser_cf::{ChaserCF, ChaserConfig, Profile};
+use chaser_cf::{ChaserCF, ChaserConfig};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize with default config
     let chaser = ChaserCF::new(ChaserConfig::default()).await?;
 
-    // Get page source from CF-protected site
-    let source = chaser.get_source("https://example.com", None).await?;
-    println!("Got {} bytes", source.len());
-
-    // Create WAF session (cookies + headers)
+    // WAF session — returns cookies + user-agent for use in reqwest/ureq/etc.
     let session = chaser.solve_waf_session("https://example.com", None).await?;
-    println!("Cookies: {}", session.cookies_string());
+    println!("cf_clearance: {}", session.cookies_string());
+    println!("user-agent: {}", session.headers["user-agent"]);
 
-    // Solve Turnstile (full page)
-    let token = chaser.solve_turnstile("https://example.com/captcha", None).await?;
-    println!("Token: {}", token);
+    // Page source after challenge cleared
+    let html = chaser.get_source("https://example.com", None).await?;
 
-    // Solve Turnstile (minimal resources)
+    // Turnstile token (full page, no site key needed)
+    let token = chaser.solve_turnstile("https://example.com", None).await?;
+
+    // Turnstile token (fast, request interception — needs site key)
     let token = chaser.solve_turnstile_min(
         "https://example.com",
-        "0x4AAAAAAxxxxx",  // site key
-        None
+        "0x4AAAAAAxxxxx",
+        None,
     ).await?;
 
     chaser.shutdown().await;
@@ -81,263 +62,166 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-### C/C++
+With proxy:
 
-```c
-#include "chaser_cf.h"
-#include <stdio.h>
-#include <unistd.h>
+```rust
+use chaser_cf::ProxyConfig;
 
-void on_result(const char* json_result, void* ctx) {
-    printf("Result: %s\n", json_result);
-    chaser_free_string((char*)json_result);
-}
+let proxy = ProxyConfig::new("1.2.3.4", 8080)
+    .with_auth("user", "pass");
 
-int main() {
-    // Initialize with default config
-    ChaserConfig config = chaser_config_default();
-    int err = chaser_init(&config);
-    if (err != 0) {
-        printf("Init failed: %d\n", err);
-        return 1;
-    }
-
-    // Solve WAF session
-    chaser_solve_waf_async("https://example.com", NULL, NULL, on_result);
-    
-    // Wait for callback
-    sleep(30);
-
-    chaser_shutdown();
-    return 0;
-}
+let session = chaser.solve_waf_session("https://example.com", Some(proxy)).await?;
 ```
 
-Compile with:
-```bash
-gcc -o example example.c -L./target/release -lchaser_cf -lpthread -ldl -lm
+### Configuration
+
+```rust
+let config = ChaserConfig::default()
+    .with_context_limit(10)       // max concurrent browser contexts
+    .with_timeout_ms(60_000)      // per-operation timeout
+    .with_lazy_init(true)         // don't launch browser until first use
+    .with_headless(true)          // headless mode
+    .with_chrome_path("/usr/bin/chromium");
 ```
 
-### Python (via ctypes)
+| Option | Default | Description |
+|--------|---------|-------------|
+| `context_limit` | 20 | Max concurrent browser contexts |
+| `timeout_ms` | 60000 | Per-operation timeout (ms) |
+| `lazy_init` | false | Defer browser launch until first use |
+| `headless` | false | Run browser headless |
+| `chrome_path` | auto | Path to Chrome/Chromium binary |
 
-```python
-import ctypes
-import json
-from ctypes import c_char_p, c_void_p, c_int, CFUNCTYPE
-
-# Load library
-lib = ctypes.CDLL('./target/release/libchaser_cf.so')
-
-# Define callback type
-CALLBACK = CFUNCTYPE(None, c_char_p, c_void_p)
-
-results = []
-
-@CALLBACK
-def on_result(json_result, user_data):
-    result = json.loads(json_result.decode())
-    results.append(result)
-    lib.chaser_free_string(json_result)
-
-# Initialize
-lib.chaser_init(None)
-
-# Solve WAF
-lib.chaser_solve_waf_async(b"https://example.com", None, None, on_result)
-
-# Wait for result
-import time
-while not results:
-    time.sleep(0.1)
-
-print(results[0])
-
-lib.chaser_shutdown()
-```
-
-### HTTP Server
+### Testing
 
 ```bash
-# Run server
+cargo run --example test_turnstile -- <url> [options]
+
+Options:
+  --headless                   Run headless
+  --proxy <host:port>          Proxy address
+  --proxy-auth <user:pass>     Proxy credentials
+  --site-key <key>             Turnstile site key (enables min mode)
+  --timeout <ms>               Timeout in ms (default: 120000)
+  --mode <waf|min|max|all>     What to solve (default: waf)
+
+# Examples
+cargo run --example test_turnstile -- https://stake.com
+cargo run --example test_turnstile -- https://stake.com --headless --mode waf
+cargo run --example test_turnstile -- https://example.com --site-key 0x4AA... --mode min
+cargo run --example test_turnstile -- https://stake.com --proxy 1.2.3.4:8080 --proxy-auth user:pass
+```
+
+## HTTP Server
+
+```bash
 cargo run --release --features http-server --bin chaser-cf-server
-
-# Or with Docker
-docker run -d -p 3000:3000 \
-  -e PORT=3000 \
-  -e CHASER_CONTEXT_LIMIT=20 \
-  -e CHASER_TIMEOUT=60000 \
-  chaser-cf
 ```
 
-API endpoints:
-
 ```bash
-# Get page source
-curl -X POST http://localhost:3000/solve \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "source", "url": "https://example.com"}'
-
-# Create WAF session
+# WAF session
 curl -X POST http://localhost:3000/solve \
   -H "Content-Type: application/json" \
   -d '{"mode": "waf-session", "url": "https://example.com"}'
 
-# Solve Turnstile (full page)
+# Page source
 curl -X POST http://localhost:3000/solve \
   -H "Content-Type: application/json" \
-  -d '{"mode": "turnstile-max", "url": "https://example.com/captcha"}'
+  -d '{"mode": "source", "url": "https://example.com"}'
 
-# Solve Turnstile (minimal)
+# Turnstile (full page)
+curl -X POST http://localhost:3000/solve \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "turnstile-max", "url": "https://example.com"}'
+
+# Turnstile (minimal)
 curl -X POST http://localhost:3000/solve \
   -H "Content-Type: application/json" \
   -d '{"mode": "turnstile-min", "url": "https://example.com", "siteKey": "0x4AAA..."}'
 
-# With profile override (windows/linux/macos)
+# With proxy
 curl -X POST http://localhost:3000/solve \
   -H "Content-Type: application/json" \
-  -d '{"mode": "waf-session", "url": "https://example.com", "profile": "linux"}'
+  -d '{"mode": "waf-session", "url": "https://example.com", "proxy": {"host": "1.2.3.4", "port": 8080}}'
 ```
 
-### Request Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `mode` | string | Yes | Operation mode: `source`, `waf-session`, `turnstile-max`, `turnstile-min` |
-| `url` | string | Yes | Target URL |
-| `siteKey` | string | For turnstile-min | Turnstile site key |
-| `profile` | string | No | Browser profile: `windows`, `linux`, `macos` (default: server config) |
-| `proxy` | object | No | Proxy configuration (see below) |
-| `authToken` | string | No | API authentication token (if `AUTH_TOKEN` env is set) |
-
-#### Proxy Configuration
-
-```json
-{
-  "proxy": {
-    "host": "proxy.example.com",
-    "port": 8080,
-    "username": "user",
-    "password": "pass"
-  }
-}
-```
-
-## Configuration
-
-### Environment Variables
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
-| `CHASER_CONTEXT_LIMIT` | `20` | Max concurrent browser contexts |
-| `CHASER_TIMEOUT` | `60000` | Request timeout (ms) |
-| `CHASER_PROFILE` | `windows` | Stealth profile (windows/linux/macos) |
-| `CHASER_LAZY_INIT` | `false` | Defer browser init until first use |
-| `CHASER_HEADLESS` | `false` | Run browser headless |
-| `CHROME_BIN` | auto-detect | Path to Chrome/Chromium binary |
+| `CHASER_CONTEXT_LIMIT` | `20` | Max concurrent contexts |
+| `CHASER_TIMEOUT` | `60000` | Timeout (ms) |
+| `CHASER_LAZY_INIT` | `false` | Lazy browser init |
+| `CHASER_HEADLESS` | `false` | Headless mode |
+| `CHROME_BIN` | auto | Chrome binary path |
 | `AUTH_TOKEN` | none | Optional API auth token |
 
-### Rust Config
+## C FFI
 
-```rust
-let config = ChaserConfig::default()
-    .with_context_limit(10)
-    .with_timeout_ms(30000)
-    .with_profile(Profile::Linux)
-    .with_lazy_init(true)
-    .with_headless(false)
-    .with_chrome_path("/usr/bin/chromium");
+Build the shared library:
+
+```bash
+cargo build --release
+# headers written to include/chaser_cf.h
 ```
-
-## API Reference
-
-### Rust API
-
-```rust
-impl ChaserCF {
-    // Lifecycle
-    async fn new(config: ChaserConfig) -> ChaserResult<Self>;
-    async fn init(&self) -> ChaserResult<()>;
-    async fn shutdown(&self);
-    async fn is_ready(&self) -> bool;
-    
-    // Standard methods (use default profile from config)
-    async fn get_source(&self, url: &str, proxy: Option<ProxyConfig>) -> ChaserResult<String>;
-    async fn solve_waf_session(&self, url: &str, proxy: Option<ProxyConfig>) -> ChaserResult<WafSession>;
-    async fn solve_turnstile(&self, url: &str, proxy: Option<ProxyConfig>) -> ChaserResult<String>;
-    async fn solve_turnstile_min(&self, url: &str, site_key: &str, proxy: Option<ProxyConfig>) -> ChaserResult<String>;
-    
-    // Methods with profile override
-    async fn get_source_with_profile(&self, url: &str, proxy: Option<ProxyConfig>, profile: Option<Profile>) -> ChaserResult<String>;
-    async fn solve_waf_session_with_profile(&self, url: &str, proxy: Option<ProxyConfig>, profile: Option<Profile>) -> ChaserResult<WafSession>;
-    async fn solve_turnstile_with_profile(&self, url: &str, proxy: Option<ProxyConfig>, profile: Option<Profile>) -> ChaserResult<String>;
-    async fn solve_turnstile_min_with_profile(&self, url: &str, site_key: &str, proxy: Option<ProxyConfig>, profile: Option<Profile>) -> ChaserResult<String>;
-}
-```
-
-### C FFI API
 
 ```c
-// Initialization
-ChaserConfig chaser_config_default(void);
-int chaser_init(const ChaserConfig* config);
-void chaser_shutdown(void);
-int chaser_is_ready(void);
+#include "chaser_cf.h"
 
-// Async operations (callback-based)
-void chaser_solve_waf_async(const char* url, const ProxyConfig* proxy, void* user_data, ChaserCallback callback);
-void chaser_get_source_async(const char* url, const ProxyConfig* proxy, void* user_data, ChaserCallback callback);
-void chaser_solve_turnstile_async(const char* url, const ProxyConfig* proxy, void* user_data, ChaserCallback callback);
-void chaser_solve_turnstile_min_async(const char* url, const char* site_key, const ProxyConfig* proxy, void* user_data, ChaserCallback callback);
+void on_result(const char* json, void* ctx) {
+    printf("%s\n", json);
+    chaser_free_string((char*)json);
+}
 
-// Memory management
-void chaser_free_string(char* s);
+int main() {
+    ChaserConfig cfg = chaser_config_default();
+    chaser_init(&cfg);
+    chaser_solve_waf_async("https://example.com", NULL, NULL, on_result);
+    sleep(30);
+    chaser_shutdown();
+}
 ```
 
-## Response Format
+```bash
+gcc example.c -L./target/release -lchaser_cf -lpthread -ldl -lm -o example
+```
 
-All operations return JSON:
+### Python (ctypes)
+
+```python
+import ctypes, json, time
+from ctypes import c_char_p, c_void_p, CFUNCTYPE
+
+lib = ctypes.CDLL('./target/release/libchaser_cf.so')
+CALLBACK = CFUNCTYPE(None, c_char_p, c_void_p)
+
+result = []
+
+@CALLBACK
+def on_result(json_bytes, _):
+    result.append(json.loads(json_bytes))
+    lib.chaser_free_string(json_bytes)
+
+lib.chaser_init(None)
+lib.chaser_solve_waf_async(b"https://example.com", None, None, on_result)
+
+while not result:
+    time.sleep(0.1)
+
+print(result[0])
+lib.chaser_shutdown()
+```
+
+## Response format
 
 ```json
-// Success - WAF Session
-{
-  "type": "WafSession",
-  "data": {
-    "cookies": [{"name": "cf_clearance", "value": "..."}],
-    "headers": {"user-agent": "..."}
-  }
-}
-
-// Success - Token
-{
-  "type": "Token",
-  "data": "0.abc123..."
-}
-
-// Success - Source
-{
-  "type": "Source", 
-  "data": "<html>..."
-}
-
-// Error
-{
-  "type": "Error",
-  "data": {"code": 6, "message": "Operation timed out after 60000ms"}
-}
+{ "type": "WafSession", "data": { "cookies": [{"name": "cf_clearance", "value": "..."}], "headers": {"user-agent": "..."} } }
+{ "type": "Token",      "data": "0.abc123..." }
+{ "type": "Source",     "data": "<html>..." }
+{ "type": "Error",      "data": {"code": 6, "message": "timed out"} }
 ```
-
-## Dependencies
-
-- [chaser_oxide](https://github.com/ccheshirecat/chaser-oxide) - Stealth browser automation (fork of chromiumoxide)
-- Chrome/Chromium browser installed on system
 
 ## License
 
 MIT OR Apache-2.0
-
-## Acknowledgements
-
-- [chromiumoxide](https://github.com/mattsse/chromiumoxide) - Base CDP client
-- [puppeteer-real-browser](https://github.com/nickvicious/puppeteer-real-browser) - Stealth technique inspiration
-- [cf-clearance-scraper](https://github.com/zfcsoftware/cf-clearance-scraper) - Original Node.js implementation

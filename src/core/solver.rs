@@ -1,430 +1,395 @@
-//! Solver implementations for chaser-cf operations
+//! Solver implementations for chaser-cf
 
 use super::BrowserManager;
 use crate::error::{ChaserError, ChaserResult};
-use crate::models::{Cookie, Profile, ProxyConfig, WafSession};
+use crate::models::{Cookie, ProxyConfig, WafSession};
 
 use chaser_oxide::auth::Credentials;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Embedded fake page HTML for turnstile-min mode
 const FAKE_PAGE_HTML: &str = include_str!("../resources/fake_page.html");
 
-/// Get page source from a Cloudflare-protected URL
+/// Get page source from a Cloudflare-protected URL.
 pub async fn get_source(
     manager: &BrowserManager,
     url: &str,
     proxy: Option<ProxyConfig>,
-    profile: Profile,
 ) -> ChaserResult<String> {
-    // Build the stealth profile for this request
-    let chaser_profile = BrowserManager::build_profile(profile);
-
-    // Acquire context permit
     let _permit = manager.acquire_permit().await?;
-
-    // Create context with proxy if provided
     let ctx_id = manager.create_context(proxy.as_ref()).await?;
+    let (page, chaser) = manager.new_page(ctx_id, "about:blank").await?;
 
-    // Create page in context with the specified profile
-    let page = manager
-        .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
-        .await?;
+    setup_proxy_auth(&page, proxy.as_ref()).await?;
 
-    // Set up proxy authentication if credentials provided
-    if let Some(ref p) = proxy {
-        if let (Some(username), Some(password)) = (&p.username, &p.password) {
-            page
-                .authenticate(Credentials {
-                    username: username.clone(),
-                    password: password.clone(),
-                })
-                .await
-                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
-        }
-    }
-
-    // Navigate and wait for load
-    page.goto(url)
+    chaser
+        .goto(url)
         .await
         .map_err(|e| ChaserError::NavigationFailed(e.to_string()))?;
 
-    // Wait for potential CF challenge to complete
-    // We look for a successful response by waiting for the page to stabilize
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    wait_for_clearance(&page, &chaser, 30).await;
 
-    // Try to detect if we're still on a CF challenge page
-    let mut attempts = 0;
-    let max_attempts = 30;
-    loop {
-        let html = page
-            .content()
-            .await
-            .map_err(|e| ChaserError::Internal(e.to_string()))?;
-
-        // Check if we've passed the challenge (no CF challenge indicators)
-        if !is_challenge_page(&html) || attempts >= max_attempts {
-            return Ok(html);
-        }
-
-        attempts += 1;
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-    }
+    page.content()
+        .await
+        .map_err(|e| ChaserError::Internal(e.to_string()))
 }
 
-/// Create WAF session with cookies and headers
+/// Navigate to a Cloudflare-protected URL with a stealth browser, solve any interactive
+/// challenge (including Turnstile managed challenges via CDP shadow-root click), and
+/// return the resulting cookies + User-Agent for use in subsequent HTTP requests.
 pub async fn solve_waf_session(
     manager: &BrowserManager,
     url: &str,
     proxy: Option<ProxyConfig>,
-    profile: Profile,
 ) -> ChaserResult<WafSession> {
-    // Build the stealth profile for this request
-    let chaser_profile = BrowserManager::build_profile(profile);
-
-    // Acquire context permit
     let _permit = manager.acquire_permit().await?;
-
-    // Create context with proxy if provided
     let ctx_id = manager.create_context(proxy.as_ref()).await?;
+    let (page, chaser) = manager.new_page(ctx_id, "about:blank").await?;
 
-    // Create page in context with the specified profile
-    let page = manager
-        .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
-        .await?;
+    setup_proxy_auth(&page, proxy.as_ref()).await?;
 
-    // Set up proxy authentication if credentials provided
-    if let Some(ref p) = proxy {
-        if let (Some(username), Some(password)) = (&p.username, &p.password) {
-            page
-                .authenticate(Credentials {
-                    username: username.clone(),
-                    password: password.clone(),
-                })
-                .await
-                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
-        }
-    }
-
-    // First, get Accept-Language via httpbin
-    let accept_language = get_accept_language(&page).await.unwrap_or_default();
-
-    // Navigate to target URL
-    page.goto(url)
+    chaser
+        .goto(url)
         .await
         .map_err(|e| ChaserError::NavigationFailed(e.to_string()))?;
 
-    // Wait for potential CF challenge to complete
-    let mut attempts = 0;
-    let max_attempts = 30;
-    loop {
-        let html = page
-            .content()
-            .await
-            .map_err(|e| ChaserError::Internal(e.to_string()))?;
+    wait_for_clearance(&page, &chaser, 30).await;
 
-        if !is_challenge_page(&html) || attempts >= max_attempts {
-            break;
-        }
-
-        attempts += 1;
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-    }
-
-    // Extract cookies
-    let cookies = page
+    let raw_cookies = page
         .get_cookies()
         .await
         .map_err(|e| ChaserError::CookieExtractionFailed(e.to_string()))?;
 
-    let cookies: Vec<Cookie> = cookies
+    let cookies: Vec<Cookie> = raw_cookies
         .into_iter()
         .map(|c| Cookie {
             name: c.name,
             value: c.value,
             domain: Some(c.domain),
             path: Some(c.path),
-            expires: Some(c.expires), // Convert f64 to Option<f64>
+            expires: Some(c.expires),
             http_only: Some(c.http_only),
             secure: Some(c.secure),
-            same_site: c.same_site.map(|s| format!("{:?}", s)),
+            same_site: c.same_site.map(|s| format!("{s:?}")),
         })
         .collect();
 
-    // Build headers
-    let mut headers = HashMap::new();
-
-    // Get user agent from page using stealth evaluation
-    let chaser = chaser_oxide::ChaserPage::new(page.clone());
     let user_agent = chaser
         .evaluate("navigator.userAgent")
         .await
         .ok()
-        .and_then(|v| v?.as_str().map(|s| s.to_string()))
+        .and_then(|v| v?.as_str().map(str::to_owned))
         .unwrap_or_default();
 
+    let mut headers = HashMap::new();
     headers.insert("user-agent".to_string(), user_agent);
-    if !accept_language.is_empty() {
-        headers.insert("accept-language".to_string(), accept_language);
-    }
 
     Ok(WafSession::new(cookies, headers))
 }
 
-/// Solve Turnstile with full page load
+/// Solve Turnstile with full page load.
 pub async fn solve_turnstile_max(
     manager: &BrowserManager,
     url: &str,
     proxy: Option<ProxyConfig>,
-    profile: Profile,
 ) -> ChaserResult<String> {
-    // Build the stealth profile for this request
-    let chaser_profile = BrowserManager::build_profile(profile);
-
-    // Acquire context permit
     let _permit = manager.acquire_permit().await?;
-
-    // Create context with proxy if provided
     let ctx_id = manager.create_context(proxy.as_ref()).await?;
+    let (page, chaser) = manager.new_page(ctx_id, "about:blank").await?;
 
-    // Create page in context with the specified profile
-    let page = manager
-        .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
-        .await?;
+    setup_proxy_auth(&page, proxy.as_ref()).await?;
 
-    // Set up proxy authentication if credentials provided
-    if let Some(ref p) = proxy {
-        if let (Some(username), Some(password)) = (&p.username, &p.password) {
-            page
-                .authenticate(Credentials {
-                    username: username.clone(),
-                    password: password.clone(),
-                })
-                .await
-                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
-        }
-    }
-
-    // Inject token extraction script before navigation
     page.evaluate_on_new_document(TURNSTILE_EXTRACTOR_SCRIPT)
         .await
         .map_err(|e| ChaserError::Internal(e.to_string()))?;
 
-    // Navigate to the page with Turnstile
-    page.goto(url)
+    chaser
+        .goto(url)
         .await
         .map_err(|e| ChaserError::NavigationFailed(e.to_string()))?;
 
-    // Wait for the cf-response element to appear
-    let token = wait_for_turnstile_token(&page, 60).await?;
-
-    Ok(token)
+    wait_for_turnstile_token(&page, 60).await
 }
 
-/// Solve Turnstile with minimal resource usage
-///
-/// This mode uses request interception to serve a lightweight HTML page
-/// that only loads the Turnstile widget, avoiding full page resource loading.
+/// Solve Turnstile with minimal resource usage (request interception mode).
 pub async fn solve_turnstile_min(
     manager: &BrowserManager,
     url: &str,
     site_key: &str,
     proxy: Option<ProxyConfig>,
-    profile: Profile,
 ) -> ChaserResult<String> {
     use chaser_oxide::cdp::browser_protocol::fetch::EventRequestPaused;
     use chaser_oxide::cdp::browser_protocol::network::ResourceType;
     use futures::StreamExt;
 
-    // Build the stealth profile for this request
-    let chaser_profile = BrowserManager::build_profile(profile);
-
-    // Acquire context permit
     let _permit = manager.acquire_permit().await?;
-
-    // Create context with proxy if provided
     let ctx_id = manager.create_context(proxy.as_ref()).await?;
+    let (page, chaser) = manager.new_page(ctx_id, "about:blank").await?;
 
-    // Create page in context with the specified profile
-    let page = manager
-        .new_page_in_context(ctx_id, "about:blank", Some(&chaser_profile))
-        .await?;
+    setup_proxy_auth(&page, proxy.as_ref()).await?;
 
-    // Set up proxy authentication if credentials provided
-    if let Some(ref p) = proxy {
-        if let (Some(username), Some(password)) = (&p.username, &p.password) {
-            page
-                .authenticate(Credentials {
-                    username: username.clone(),
-                    password: password.clone(),
-                })
-                .await
-                .map_err(|e| ChaserError::Internal(format!("Proxy auth failed: {}", e)))?;
-        }
-    }
-
-    // Prepare fake page HTML with site key
     let fake_html = FAKE_PAGE_HTML.replace("<site-key>", site_key);
 
-    // Wrap in ChaserPage for request interception API
-    let chaser = chaser_oxide::ChaserPage::new(page.clone());
-
-    // Enable request interception for document requests
     chaser
         .enable_request_interception("*", Some(ResourceType::Document))
         .await
-        .map_err(|e| ChaserError::Internal(format!("Failed to enable interception: {}", e)))?;
+        .map_err(|e| ChaserError::Internal(format!("enable interception: {e}")))?;
 
-    // Set up event listener for intercepted requests
     let mut request_events = page
         .event_listener::<EventRequestPaused>()
         .await
-        .map_err(|e| ChaserError::Internal(format!("Failed to listen for requests: {}", e)))?;
+        .map_err(|e| ChaserError::Internal(format!("request listener: {e}")))?;
 
-    // Clone values for the spawned task
-    let url_clone = url.to_string();
+    let url_str = url.to_string();
     let fake_html_clone = fake_html.clone();
     let chaser_clone = chaser.clone();
 
-    // Spawn task to handle intercepted requests
     let intercept_handle = tokio::spawn(async move {
         while let Some(event) = request_events.next().await {
-            let request_url = &event.request.url;
-
-            // Check if this is the document request for our target URL
-            let is_target = request_url == &url_clone
-                || request_url == &format!("{}/", url_clone)
-                || request_url.starts_with(&url_clone);
+            let req_url = &event.request.url;
+            let is_target = req_url == &url_str
+                || req_url == &format!("{}/", url_str)
+                || req_url.starts_with(&url_str);
 
             if is_target && event.resource_type == ResourceType::Document {
-                // Fulfill with our minimal Turnstile page
                 let _ = chaser_clone
                     .fulfill_request_html(event.request_id.clone(), &fake_html_clone, 200)
                     .await;
             } else {
-                // Continue other requests
-                let _ = chaser_clone
-                    .continue_request(event.request_id.clone())
-                    .await;
+                let _ = chaser_clone.continue_request(event.request_id.clone()).await;
             }
         }
     });
 
-    // Navigate to the URL (will be intercepted)
-    page.goto(url)
+    chaser
+        .goto(url)
         .await
         .map_err(|e| ChaserError::NavigationFailed(e.to_string()))?;
 
-    // Wait for the cf-response element to appear
     let token = wait_for_turnstile_token(&page, 60).await?;
 
-    // Clean up
     intercept_handle.abort();
     let _ = chaser.disable_request_interception().await;
 
     Ok(token)
 }
 
-/// Script injected to extract Turnstile token
-const TURNSTILE_EXTRACTOR_SCRIPT: &str = r#"
-    let token = null;
-    async function waitForToken() {
-        while (!token) {
-            try {
-                token = window.turnstile.getResponse();
-            } catch (e) {}
-            await new Promise(resolve => setTimeout(resolve, 500));
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+async fn setup_proxy_auth(
+    page: &chaser_oxide::Page,
+    proxy: Option<&ProxyConfig>,
+) -> ChaserResult<()> {
+    if let Some(p) = proxy {
+        if let (Some(username), Some(password)) = (&p.username, &p.password) {
+            page.authenticate(Credentials {
+                username: username.clone(),
+                password: password.clone(),
+            })
+            .await
+            .map_err(|e| ChaserError::Internal(format!("proxy auth: {e}")))?;
         }
-        var c = document.createElement("input");
-        c.type = "hidden";
-        c.name = "cf-response";
-        c.value = token;
-        document.body.appendChild(c);
     }
-    waitForToken();
+    Ok(())
+}
+
+/// Poll until `cf_clearance` appears (meaning the challenge was solved) or the
+/// timeout expires. If a challenge is still active, try clicking the Turnstile
+/// checkbox via CDP shadow-root traversal every ~1.5 seconds.
+async fn wait_for_clearance(
+    page: &chaser_oxide::Page,
+    chaser: &chaser_oxide::ChaserPage,
+    timeout_seconds: u64,
+) {
+    let started = std::time::Instant::now();
+    let timeout = Duration::from_secs(timeout_seconds);
+    let mut last_click = started - Duration::from_secs(30);
+
+    loop {
+        if has_clearance_cookie(page).await {
+            // Small settle delay so Set-Cookie propagates fully.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            return;
+        }
+
+        if started.elapsed() >= timeout {
+            return;
+        }
+
+        if last_click.elapsed() >= Duration::from_millis(800) {
+            try_click_challenge(chaser).await;
+            last_click = std::time::Instant::now();
+        }
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Return true if the browser has a `cf_clearance` cookie for any domain.
+async fn has_clearance_cookie(page: &chaser_oxide::Page) -> bool {
+    page.get_cookies()
+        .await
+        .map(|cookies| cookies.iter().any(|c| c.name == "cf_clearance"))
+        .unwrap_or(false)
+}
+
+/// Click the Turnstile challenge element by traversing its closed shadow root via CDP.
+///
+/// Cloudflare's Turnstile widget lives inside a CLOSED shadow root. JS's
+/// `element.shadowRoot` returns null for these, but CDP's `DOM.getDocument` with
+/// `pierce: true` exposes them as `node.shadow_roots` — identical to what the Python
+/// CF-Clearance-Scraper does with `parent.shadow_roots[0]`.
+async fn try_click_challenge(chaser: &chaser_oxide::ChaserPage) {
+    use chaser_oxide::cdp::browser_protocol::dom::{GetBoxModelParams, GetDocumentParams};
+
+    let page = chaser.raw_page();
+
+    let doc = match page
+        .execute(GetDocumentParams {
+            depth: Some(-1),
+            pierce: Some(true),
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let Some(target_id) = find_shadow_challenge_node(&doc.result.root) else {
+        return;
+    };
+
+    let box_model = match page
+        .execute(GetBoxModelParams {
+            node_id: Some(target_id),
+            backend_node_id: None,
+            object_id: None,
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let content = box_model.result.model.content.inner();
+    if content.len() < 8 {
+        return;
+    }
+
+    let cx = (content[0] + content[2]) / 2.0;
+    let cy = (content[1] + content[5]) / 2.0;
+
+    // Small random jitter so we never click the exact center every time.
+    let (jx, jy, pre_ms) = {
+        use rand::Rng as _;
+        let mut rng = rand::thread_rng();
+        (
+            rng.gen_range(-4.0..=4.0_f64),
+            rng.gen_range(-3.0..=3.0_f64),
+            rng.gen_range(60..180_u64),
+        )
+    };
+    let tx = cx + jx;
+    let ty = cy + jy;
+
+    // Curved approach from slightly above-left.
+    let sx = tx - 80.0;
+    let sy = ty - 35.0;
+    for i in 1..=5_u8 {
+        let t = i as f64 / 5.0;
+        let arc = (std::f64::consts::PI * t).sin() * 8.0;
+        let _ = page
+            .move_mouse(chaser_oxide::layout::Point::new(
+                sx + (tx - sx) * t + arc,
+                sy + (ty - sy) * t,
+            ))
+            .await;
+        let step_ms = { use rand::Rng as _; rand::thread_rng().gen_range(25..70_u64) };
+        tokio::time::sleep(Duration::from_millis(step_ms)).await;
+    }
+
+    tokio::time::sleep(Duration::from_millis(pre_ms)).await;
+    let _ = page.click(chaser_oxide::layout::Point::new(tx, ty)).await;
+}
+
+/// Walk the CDP DOM tree (shadow roots included via `pierce: true`) and return the
+/// `NodeId` of the first visible child inside any shadow root — the Turnstile widget.
+fn find_shadow_challenge_node(
+    node: &chaser_oxide::cdp::browser_protocol::dom::Node,
+) -> Option<chaser_oxide::cdp::browser_protocol::dom::NodeId> {
+    if let Some(shadow_roots) = &node.shadow_roots {
+        for sr in shadow_roots {
+            if let Some(children) = &sr.children {
+                for child in children {
+                    let attrs = child.attributes.as_deref().unwrap_or(&[]);
+                    let hidden = attrs.chunks(2).any(|p| {
+                        p.len() == 2 && p[0] == "style" && p[1].contains("display: none")
+                    });
+                    if !hidden {
+                        return Some(child.node_id);
+                    }
+                }
+            }
+        }
+    }
+    for child in node.children.as_deref().unwrap_or(&[]) {
+        if let Some(id) = find_shadow_challenge_node(child) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+const TURNSTILE_EXTRACTOR_SCRIPT: &str = r#"
+    (function() {
+        let token = null;
+        async function waitForToken() {
+            while (!token) {
+                try { token = window.turnstile.getResponse(); } catch(e) {}
+                await new Promise(r => setTimeout(r, 500));
+            }
+            var c = document.createElement("input");
+            c.type = "hidden"; c.name = "cf-response"; c.value = token;
+            document.body.appendChild(c);
+        }
+        waitForToken();
+    })();
 "#;
 
-/// Wait for Turnstile token to be available
 async fn wait_for_turnstile_token(
     page: &chaser_oxide::Page,
     timeout_seconds: u64,
 ) -> ChaserResult<String> {
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(timeout_seconds);
-
-    // Wrap in ChaserPage for stealth evaluation
     let chaser = chaser_oxide::ChaserPage::new(page.clone());
 
     loop {
         if start.elapsed() > timeout {
-            return Err(ChaserError::CaptchaFailed(
-                "Timeout waiting for token".to_string(),
-            ));
+            return Err(ChaserError::CaptchaFailed("timeout waiting for token".into()));
         }
 
         let result = chaser
             .evaluate(
-                r#"
-                (function() {
-                    // First check if turnstile object exists and has a response
+                r#"(function() {
                     if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
-                        var token = window.turnstile.getResponse();
-                        if (token) return token;
+                        var t = window.turnstile.getResponse();
+                        if (t) return t;
                     }
-                    // Fallback: check for cf-response element (from our injected script)
                     var el = document.querySelector('[name="cf-response"]');
                     return el ? el.value : null;
-                })()
-            "#,
+                })()"#,
             )
             .await;
 
-        if let Ok(Some(value)) = result {
-            if let Some(token) = value.as_str() {
-                if token.len() > 10 {
-                    return Ok(token.to_string());
+        if let Ok(Some(v)) = result {
+            if let Some(t) = v.as_str() {
+                if t.len() > 10 {
+                    return Ok(t.to_string());
                 }
             }
         }
 
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
-
-/// Get Accept-Language header via httpbin
-async fn get_accept_language(page: &chaser_oxide::Page) -> Option<String> {
-    let chaser = chaser_oxide::ChaserPage::new(page.clone());
-    
-    let result = chaser
-        .evaluate(
-            r#"
-            fetch("https://httpbin.org/get")
-                .then(r => r.json())
-                .then(r => r.headers["Accept-Language"] || r.headers["accept-language"])
-                .catch(() => null)
-        "#,
-        )
-        .await
-        .ok()?;
-
-    result?.as_str().map(|s| s.to_string())
-}
-
-/// Check if page content appears to be a Cloudflare challenge page
-fn is_challenge_page(html: &str) -> bool {
-    let challenge_indicators = [
-        "challenge-platform",
-        "cf-spinner",
-        "cf_chl_opt",
-        "Just a moment",
-        "Checking your browser",
-        "ray ID",
-        "__cf_chl",
-    ];
-
-    let html_lower = html.to_lowercase();
-    challenge_indicators
-        .iter()
-        .any(|indicator| html_lower.contains(&indicator.to_lowercase()))
 }

@@ -11,7 +11,7 @@ pub use browser::BrowserManager;
 pub use config::ChaserConfig;
 
 use crate::error::{ChaserError, ChaserResult};
-use crate::models::{Profile, ProxyConfig, WafSession};
+use crate::models::{ProxyConfig, WafSession};
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -133,33 +133,12 @@ impl ChaserCF {
     ///
     /// The HTML source of the page after bypassing Cloudflare protection.
     pub async fn get_source(&self, url: &str, proxy: Option<ProxyConfig>) -> ChaserResult<String> {
-        self.get_source_with_profile(url, proxy, None).await
-    }
-
-    /// Get page source from a Cloudflare-protected URL with a specific profile
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - Target URL to scrape
-    /// * `proxy` - Optional proxy configuration
-    /// * `profile` - Optional profile override (uses default if None)
-    ///
-    /// # Returns
-    ///
-    /// The HTML source of the page after bypassing Cloudflare protection.
-    pub async fn get_source_with_profile(
-        &self,
-        url: &str,
-        proxy: Option<ProxyConfig>,
-        profile: Option<Profile>,
-    ) -> ChaserResult<String> {
         let browser = self.browser().await?;
         let manager = browser.as_ref().ok_or(ChaserError::NotInitialized)?;
-        let profile = profile.unwrap_or(self.config.profile);
 
         tokio::time::timeout(
             self.config.timeout(),
-            solver::get_source(manager, url, proxy, profile),
+            solver::get_source(manager, url, proxy),
         )
         .await
         .map_err(|_| ChaserError::Timeout(self.config.timeout_ms))?
@@ -181,34 +160,12 @@ impl ChaserCF {
         url: &str,
         proxy: Option<ProxyConfig>,
     ) -> ChaserResult<WafSession> {
-        self.solve_waf_session_with_profile(url, proxy, None).await
-    }
-
-    /// Create a WAF session with a specific profile
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - Target URL to create session for
-    /// * `proxy` - Optional proxy configuration
-    /// * `profile` - Optional profile override (uses default if None)
-    ///
-    /// # Returns
-    ///
-    /// A `WafSession` containing cookies and headers that can be used for
-    /// subsequent requests to the same site.
-    pub async fn solve_waf_session_with_profile(
-        &self,
-        url: &str,
-        proxy: Option<ProxyConfig>,
-        profile: Option<Profile>,
-    ) -> ChaserResult<WafSession> {
         let browser = self.browser().await?;
         let manager = browser.as_ref().ok_or(ChaserError::NotInitialized)?;
-        let profile = profile.unwrap_or(self.config.profile);
 
         tokio::time::timeout(
             self.config.timeout(),
-            solver::solve_waf_session(manager, url, proxy, profile),
+            solver::solve_waf_session(manager, url, proxy),
         )
         .await
         .map_err(|_| ChaserError::Timeout(self.config.timeout_ms))?
@@ -229,33 +186,12 @@ impl ChaserCF {
         url: &str,
         proxy: Option<ProxyConfig>,
     ) -> ChaserResult<String> {
-        self.solve_turnstile_with_profile(url, proxy, None).await
-    }
-
-    /// Solve a Turnstile captcha with a specific profile
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - URL containing the Turnstile widget
-    /// * `proxy` - Optional proxy configuration
-    /// * `profile` - Optional profile override (uses default if None)
-    ///
-    /// # Returns
-    ///
-    /// The Turnstile token string.
-    pub async fn solve_turnstile_with_profile(
-        &self,
-        url: &str,
-        proxy: Option<ProxyConfig>,
-        profile: Option<Profile>,
-    ) -> ChaserResult<String> {
         let browser = self.browser().await?;
         let manager = browser.as_ref().ok_or(ChaserError::NotInitialized)?;
-        let profile = profile.unwrap_or(self.config.profile);
 
         tokio::time::timeout(
             self.config.timeout(),
-            solver::solve_turnstile_max(manager, url, proxy, profile),
+            solver::solve_turnstile_max(manager, url, proxy),
         )
         .await
         .map_err(|_| ChaserError::Timeout(self.config.timeout_ms))?
@@ -281,36 +217,12 @@ impl ChaserCF {
         site_key: &str,
         proxy: Option<ProxyConfig>,
     ) -> ChaserResult<String> {
-        self.solve_turnstile_min_with_profile(url, site_key, proxy, None)
-            .await
-    }
-
-    /// Solve a Turnstile captcha with minimal resource usage and a specific profile
-    ///
-    /// # Arguments
-    ///
-    /// * `url` - URL to use as the Turnstile origin
-    /// * `site_key` - The Turnstile site key
-    /// * `proxy` - Optional proxy configuration
-    /// * `profile` - Optional profile override (uses default if None)
-    ///
-    /// # Returns
-    ///
-    /// The Turnstile token string.
-    pub async fn solve_turnstile_min_with_profile(
-        &self,
-        url: &str,
-        site_key: &str,
-        proxy: Option<ProxyConfig>,
-        profile: Option<Profile>,
-    ) -> ChaserResult<String> {
         let browser = self.browser().await?;
         let manager = browser.as_ref().ok_or(ChaserError::NotInitialized)?;
-        let profile = profile.unwrap_or(self.config.profile);
 
         tokio::time::timeout(
             self.config.timeout(),
-            solver::solve_turnstile_min(manager, url, site_key, proxy, profile),
+            solver::solve_turnstile_min(manager, url, site_key, proxy),
         )
         .await
         .map_err(|_| ChaserError::Timeout(self.config.timeout_ms))?
