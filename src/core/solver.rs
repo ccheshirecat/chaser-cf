@@ -156,7 +156,9 @@ pub async fn solve_turnstile_min(
                     .fulfill_request_html(event.request_id.clone(), &fake_html_clone, 200)
                     .await;
             } else {
-                let _ = chaser_clone.continue_request(event.request_id.clone()).await;
+                let _ = chaser_clone
+                    .continue_request(event.request_id.clone())
+                    .await;
             }
         }
     });
@@ -304,7 +306,10 @@ async fn try_click_challenge(chaser: &chaser_oxide::ChaserPage) {
                 sy + (ty - sy) * t,
             ))
             .await;
-        let step_ms = { use rand::Rng as _; rand::thread_rng().gen_range(25..70_u64) };
+        let step_ms = {
+            use rand::Rng as _;
+            rand::thread_rng().gen_range(25..70_u64)
+        };
         tokio::time::sleep(Duration::from_millis(step_ms)).await;
     }
 
@@ -322,9 +327,9 @@ fn find_shadow_challenge_node(
             if let Some(children) = &sr.children {
                 for child in children {
                     let attrs = child.attributes.as_deref().unwrap_or(&[]);
-                    let hidden = attrs.chunks(2).any(|p| {
-                        p.len() == 2 && p[0] == "style" && p[1].contains("display: none")
-                    });
+                    let hidden = attrs
+                        .chunks(2)
+                        .any(|p| p.len() == 2 && p[0] == "style" && p[1].contains("display: none"));
                     if !hidden {
                         return Some(child.node_id);
                     }
@@ -366,7 +371,9 @@ async fn wait_for_turnstile_token(
 
     loop {
         if start.elapsed() > timeout {
-            return Err(ChaserError::CaptchaFailed("timeout waiting for token".into()));
+            return Err(ChaserError::CaptchaFailed(
+                "timeout waiting for token".into(),
+            ));
         }
 
         let result = chaser

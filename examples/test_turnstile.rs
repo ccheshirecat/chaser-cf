@@ -161,7 +161,12 @@ async fn run_turnstile_max(chaser: &ChaserCF, url: &str, proxy: Option<ProxyConf
     println!();
 }
 
-async fn run_turnstile_min(chaser: &ChaserCF, url: &str, site_key: &str, proxy: Option<ProxyConfig>) {
+async fn run_turnstile_min(
+    chaser: &ChaserCF,
+    url: &str,
+    site_key: &str,
+    proxy: Option<ProxyConfig>,
+) {
     println!("── Turnstile min (key: {site_key}) ──");
     match chaser.solve_turnstile_min(url, site_key, proxy).await {
         Ok(token) => {

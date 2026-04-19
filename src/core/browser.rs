@@ -20,12 +20,10 @@ pub struct BrowserManager {
 
 impl BrowserManager {
     pub async fn new(config: &super::ChaserConfig) -> ChaserResult<Self> {
-        let mut builder = BrowserConfig::builder()
-            .viewport(None)
-            .args(vec![
-                "--disable-blink-features=AutomationControlled".to_string(),
-                "--disable-infobars".to_string(),
-            ]);
+        let mut builder = BrowserConfig::builder().viewport(None).args(vec![
+            "--disable-blink-features=AutomationControlled".to_string(),
+            "--disable-infobars".to_string(),
+        ]);
 
         if let Some(ref path) = config.chrome_path {
             builder = builder.chrome_executable(path.clone());
