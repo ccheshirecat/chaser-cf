@@ -10,7 +10,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use chaser_cf::{ChaserCF, ChaserConfig, Profile, ProxyConfig};
+use chaser_cf::{ChaserCF, ChaserConfig, ProxyConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,17 +30,8 @@ struct ScraperRequest {
     mode: String,
     url: String,
     site_key: Option<String>,
-    /// Profile name: "windows", "linux", or "macos"
-    profile: Option<String>,
     proxy: Option<ProxyConfigRequest>,
     auth_token: Option<String>,
-}
-
-impl ScraperRequest {
-    /// Parse the profile string into a Profile enum
-    fn get_profile(&self) -> Option<Profile> {
-        self.profile.as_ref().and_then(|s| Profile::parse(s))
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,46 +134,21 @@ async fn scraper_handler(
         }
     }
 
-    // Get profile before moving other fields
-    let profile = req.get_profile();
     let proxy = req.proxy.map(Into::into);
 
-    // Log the profile being used
-    if let Some(ref p) = profile {
-        tracing::debug!("Using profile override: {:?}", p);
-    }
-
     match req.mode.as_str() {
-        "source" => {
-            match state
-                .chaser
-                .get_source_with_profile(&req.url, proxy, profile)
-                .await
-            {
-                Ok(source) => ScraperResponse::success_source(source),
-                Err(e) => ScraperResponse::error(500, e.to_string()),
-            }
-        }
-        "waf-session" => {
-            match state
-                .chaser
-                .solve_waf_session_with_profile(&req.url, proxy, profile)
-                .await
-            {
-                Ok(session) => ScraperResponse::success_waf(session.cookies, session.headers),
-                Err(e) => ScraperResponse::error(500, e.to_string()),
-            }
-        }
-        "turnstile-max" => {
-            match state
-                .chaser
-                .solve_turnstile_with_profile(&req.url, proxy, profile)
-                .await
-            {
-                Ok(token) => ScraperResponse::success_token(token),
-                Err(e) => ScraperResponse::error(500, e.to_string()),
-            }
-        }
+        "source" => match state.chaser.get_source(&req.url, proxy).await {
+            Ok(source) => ScraperResponse::success_source(source),
+            Err(e) => ScraperResponse::error(500, e.to_string()),
+        },
+        "waf-session" => match state.chaser.solve_waf_session(&req.url, proxy).await {
+            Ok(session) => ScraperResponse::success_waf(session.cookies, session.headers),
+            Err(e) => ScraperResponse::error(500, e.to_string()),
+        },
+        "turnstile-max" => match state.chaser.solve_turnstile(&req.url, proxy).await {
+            Ok(token) => ScraperResponse::success_token(token),
+            Err(e) => ScraperResponse::error(500, e.to_string()),
+        },
         "turnstile-min" => {
             let site_key = match req.site_key {
                 Some(key) => key,
@@ -190,7 +156,7 @@ async fn scraper_handler(
             };
             match state
                 .chaser
-                .solve_turnstile_min_with_profile(&req.url, &site_key, proxy, profile)
+                .solve_turnstile_min(&req.url, &site_key, proxy)
                 .await
             {
                 Ok(token) => ScraperResponse::success_token(token),
