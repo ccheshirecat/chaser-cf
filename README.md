@@ -1,5 +1,9 @@
 # chaser-cf
 
+[![crates.io](https://img.shields.io/crates/v/chaser-cf.svg)](https://crates.io/crates/chaser-cf)
+[![docs.rs](https://docs.rs/chaser-cf/badge.svg)](https://docs.rs/chaser-cf)
+[![license](https://img.shields.io/crates/l/chaser-cf.svg)](LICENSE-MIT)
+
 Cloudflare bypass library powered by stealth browser automation. No captcha API tokens needed — pure browser-based challenge solving with C FFI bindings for use from any language.
 
 ## How it works
