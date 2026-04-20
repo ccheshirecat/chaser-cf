@@ -40,6 +40,12 @@ pub struct ProxyConfig {
     pub username: Option<String>,
     /// Optional password for authentication
     pub password: Option<String>,
+    /// Optional URL scheme. Defaults to "http" for backward compatibility.
+    /// Chrome's `--proxy-server` natively supports `http`, `https`,
+    /// `socks4`, `socks5`. Use `socks5h` for remote DNS resolution.
+    /// Set via [`ProxyConfig::with_scheme`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
 }
 
 impl ProxyConfig {
@@ -50,6 +56,7 @@ impl ProxyConfig {
             port,
             username: None,
             password: None,
+            scheme: None,
         }
     }
 
@@ -60,10 +67,23 @@ impl ProxyConfig {
         self
     }
 
-    /// Get proxy URL in format http://host:port
-    /// Note: Chrome/CDP doesn't support inline authentication in proxy URLs
+    /// Override the URL scheme. Default is "http". Common values:
+    /// - "http" — HTTP CONNECT (default; Chrome's classic proxy mode)
+    /// - "https" — HTTPS CONNECT
+    /// - "socks5" — SOCKS5 with local DNS
+    /// - "socks5h" — SOCKS5 with remote (proxy-side) DNS
+    /// - "socks4" — SOCKS4
+    pub fn with_scheme(mut self, scheme: impl Into<String>) -> Self {
+        self.scheme = Some(scheme.into());
+        self
+    }
+
+    /// Get proxy URL in the form `<scheme>://host:port`. Defaults the
+    /// scheme to `http` when none has been explicitly set.
+    /// Note: Chrome/CDP doesn't support inline authentication in proxy URLs.
     pub fn to_url(&self) -> String {
-        format!("http://{}:{}", self.host, self.port)
+        let scheme = self.scheme.as_deref().unwrap_or("http");
+        format!("{scheme}://{}:{}", self.host, self.port)
     }
 }
 
@@ -193,6 +213,30 @@ mod tests {
     fn test_proxy_url_with_auth() {
         let proxy = ProxyConfig::new("proxy.example.com", 8080).with_auth("user", "pass");
         assert_eq!(proxy.to_url(), "http://proxy.example.com:8080");
+    }
+
+    #[test]
+    fn test_proxy_url_with_socks5_scheme() {
+        let proxy = ProxyConfig::new("127.0.0.1", 1080).with_scheme("socks5");
+        assert_eq!(proxy.to_url(), "socks5://127.0.0.1:1080");
+    }
+
+    #[test]
+    fn test_proxy_url_with_socks5h_scheme_remote_dns() {
+        let proxy = ProxyConfig::new("127.0.0.1", 1080)
+            .with_scheme("socks5h")
+            .with_auth("u", "p");
+        assert_eq!(proxy.to_url(), "socks5h://127.0.0.1:1080");
+    }
+
+    #[test]
+    fn test_proxy_url_default_scheme_is_http() {
+        // Backward compat: ProxyConfig::new() with no with_scheme()
+        // must continue to emit http:// URLs, otherwise existing
+        // callers break silently.
+        let proxy = ProxyConfig::new("h", 1);
+        assert!(proxy.scheme.is_none());
+        assert_eq!(proxy.to_url(), "http://h:1");
     }
 
     #[test]
