@@ -10,8 +10,10 @@ fn usage() {
     eprintln!("  --headless                  Run headless");
     eprintln!("  --site-key <key>            Turnstile site key (enables min mode)");
     eprintln!("  --timeout <ms>              Timeout in ms (default: 120000)");
-    eprintln!("  --no-sandbox                Run Chrome without sandbox (required when running as root)
-  --mode <waf|min|max|all>    What to solve (default: waf)");
+    eprintln!(
+        "  --no-sandbox                Run Chrome without sandbox (required when running as root)
+  --mode <waf|min|max|all>    What to solve (default: waf)"
+    );
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  test_turnstile https://stake.com");

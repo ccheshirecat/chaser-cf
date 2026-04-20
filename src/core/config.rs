@@ -110,10 +110,7 @@ impl ChaserConfig {
         }
 
         if let Ok(val) = env::var("CHASER_EXTRA_ARGS") {
-            config.extra_args = val
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
+            config.extra_args = val.split_whitespace().map(|s| s.to_string()).collect();
         }
 
         config
@@ -210,8 +207,7 @@ mod tests {
 
     #[test]
     fn test_with_extra_args_replaces() {
-        let config = ChaserConfig::default()
-            .with_extra_args(["--no-sandbox", "--disable-gpu"]);
+        let config = ChaserConfig::default().with_extra_args(["--no-sandbox", "--disable-gpu"]);
         assert_eq!(config.extra_args, vec!["--no-sandbox", "--disable-gpu"]);
         // with_extra_args replaces; calling again clears the previous set
         let config2 = config.with_extra_args(vec!["--foo"]);
