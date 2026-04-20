@@ -20,10 +20,17 @@ pub struct BrowserManager {
 
 impl BrowserManager {
     pub async fn new(config: &super::ChaserConfig) -> ChaserResult<Self> {
-        let mut builder = BrowserConfig::builder().viewport(None).args(vec![
+        // Baseline flags chaser-cf always sets, plus any extras the caller
+        // configured via ChaserConfig::with_extra_args / add_extra_arg /
+        // CHASER_EXTRA_ARGS env var. Common extras: --no-sandbox (when the
+        // host process runs as root), --disable-gpu, --disable-dev-shm-usage.
+        let mut chrome_args: Vec<String> = vec![
             "--disable-blink-features=AutomationControlled".to_string(),
             "--disable-infobars".to_string(),
-        ]);
+        ];
+        chrome_args.extend(config.extra_args.iter().cloned());
+
+        let mut builder = BrowserConfig::builder().viewport(None).args(chrome_args);
 
         if let Some(ref path) = config.chrome_path {
             builder = builder.chrome_executable(path.clone());
