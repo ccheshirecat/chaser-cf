@@ -45,7 +45,7 @@ once_cell = "1"
 futures = "0.3"
 
 # Random number generation (humanized mouse clicks)
-rand = "0.8"
+rand = "0.9.3"
 
 # Base64 encoding (for request interception)
 base64 = "0.22"
