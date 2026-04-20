@@ -10,6 +10,24 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// Normalize a Chrome-style flag for chaser-oxide's `ArgsBuilder`.
+///
+/// chaser-oxide stores arg keys WITHOUT the leading `--` and prepends
+/// `--` itself at command-build time. Passing pre-formatted strings
+/// (`"--no-sandbox"`) produces `"----no-sandbox"`, which Chrome silently
+/// ignores. This helper strips any leading dash chars so the rendered
+/// command-line argument comes out correctly:
+///
+///   "--no-sandbox"           -> "no-sandbox"           -> "--no-sandbox"
+///   "--key=value"            -> "key=value"            -> "--key=value"
+///   "no-sandbox"             -> "no-sandbox"           -> "--no-sandbox"
+///
+/// Both `--key=value` and `--key value` chrome-flag forms are supported
+/// (the renderer just emits the stored key verbatim with a `--` prefix).
+pub(crate) fn normalize_chrome_flag(raw: &str) -> String {
+    raw.trim_start_matches('-').to_string()
+}
+
 pub struct BrowserManager {
     browser: Browser,
     context_semaphore: Arc<Semaphore>,
@@ -24,11 +42,17 @@ impl BrowserManager {
         // configured via ChaserConfig::with_extra_args / add_extra_arg /
         // CHASER_EXTRA_ARGS env var. Common extras: --no-sandbox (when the
         // host process runs as root), --disable-gpu, --disable-dev-shm-usage.
+        //
+        // Every flag goes through normalize_chrome_flag, which strips the
+        // leading `--` so chaser-oxide's ArgsBuilder doesn't double-render
+        // it as `----flag`. The original chaser-cf 0.1.0..0.1.4 baseline
+        // flags hit this exact bug and were silently ignored by Chrome
+        // for the entire lifetime of those releases.
         let mut chrome_args: Vec<String> = vec![
-            "--disable-blink-features=AutomationControlled".to_string(),
-            "--disable-infobars".to_string(),
+            normalize_chrome_flag("--disable-blink-features=AutomationControlled"),
+            normalize_chrome_flag("--disable-infobars"),
         ];
-        chrome_args.extend(config.extra_args.iter().cloned());
+        chrome_args.extend(config.extra_args.iter().map(|a| normalize_chrome_flag(a)));
 
         let mut builder = BrowserConfig::builder().viewport(None).args(chrome_args);
 
@@ -178,5 +202,38 @@ pub struct ContextPermit {
 impl Drop for ContextPermit {
     fn drop(&mut self) {
         self.active_contexts.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_chrome_flag;
+
+    #[test]
+    fn normalize_strips_double_dash_keys() {
+        assert_eq!(normalize_chrome_flag("--no-sandbox"), "no-sandbox");
+        assert_eq!(normalize_chrome_flag("--disable-gpu"), "disable-gpu");
+    }
+
+    #[test]
+    fn normalize_strips_double_dash_keyvalue() {
+        assert_eq!(
+            normalize_chrome_flag("--disable-blink-features=AutomationControlled"),
+            "disable-blink-features=AutomationControlled"
+        );
+    }
+
+    #[test]
+    fn normalize_passes_through_already_clean() {
+        assert_eq!(normalize_chrome_flag("no-sandbox"), "no-sandbox");
+        assert_eq!(normalize_chrome_flag("key=value"), "key=value");
+    }
+
+    #[test]
+    fn normalize_handles_single_dash_too() {
+        // Some legacy chrome flags use a single dash; trim_start_matches('-')
+        // strips any number, so both forms normalize identically.
+        assert_eq!(normalize_chrome_flag("-no-sandbox"), "no-sandbox");
+        assert_eq!(normalize_chrome_flag("---no-sandbox"), "no-sandbox");
     }
 }
