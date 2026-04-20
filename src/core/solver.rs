@@ -284,11 +284,11 @@ async fn try_click_challenge(chaser: &chaser_oxide::ChaserPage) {
     // Small random jitter so we never click the exact center every time.
     let (jx, jy, pre_ms) = {
         use rand::Rng as _;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         (
-            rng.gen_range(-4.0..=4.0_f64),
-            rng.gen_range(-3.0..=3.0_f64),
-            rng.gen_range(60..180_u64),
+            rng.random_range(-4.0..=4.0_f64),
+            rng.random_range(-3.0..=3.0_f64),
+            rng.random_range(60..180_u64),
         )
     };
     let tx = cx + jx;
@@ -308,7 +308,7 @@ async fn try_click_challenge(chaser: &chaser_oxide::ChaserPage) {
             .await;
         let step_ms = {
             use rand::Rng as _;
-            rand::thread_rng().gen_range(25..70_u64)
+            rand::rng().random_range(25..70_u64)
         };
         tokio::time::sleep(Duration::from_millis(step_ms)).await;
     }
