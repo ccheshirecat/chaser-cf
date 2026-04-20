@@ -1,6 +1,6 @@
 [package]
 name = "chaser-cf"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "High-performance Cloudflare bypass library with stealth browser automation. Rust-native with C FFI bindings."
 license = "MIT OR Apache-2.0"

@@ -40,6 +40,8 @@ pub struct BrowserManager {
     healthy: Arc<AtomicBool>,
     #[cfg(target_os = "linux")]
     profile: Profile,
+    #[cfg(target_os = "linux")]
+    xvfb: Option<std::process::Child>,
 }
 
 impl BrowserManager {
@@ -54,6 +56,41 @@ impl BrowserManager {
         // it as `----flag`. The original chaser-cf 0.1.0..0.1.4 baseline
         // flags hit this exact bug and were silently ignored by Chrome
         // for the entire lifetime of those releases.
+        // On Linux, optionally start an Xvfb virtual display and run Chrome
+        // headed inside it. This avoids all headless-detection heuristics at
+        // the cost of needing `Xvfb` installed (`apt install xvfb`).
+        #[cfg(target_os = "linux")]
+        let xvfb = if config.virtual_display {
+            let display = find_free_display();
+            let display_str = format!(":{display}");
+            let child = std::process::Command::new("Xvfb")
+                .args([
+                    &display_str,
+                    "-screen",
+                    "0",
+                    "1920x1080x24",
+                    "-ac",
+                    "+extension",
+                    "GLX",
+                    "+render",
+                    "-noreset",
+                ])
+                .spawn()
+                .map_err(|e| {
+                    ChaserError::InitFailed(format!(
+                        "Xvfb: {e}. Is xvfb installed? (apt install xvfb)"
+                    ))
+                })?;
+            // Give Xvfb time to open the socket before Chrome connects.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            // SAFETY: set_var is unsafe in multi-threaded code; we do this once
+            // at init before any page tasks are spawned so there are no races.
+            unsafe { std::env::set_var("DISPLAY", &display_str) };
+            Some(child)
+        } else {
+            None
+        };
+
         let mut chrome_args: Vec<String> = vec![
             normalize_chrome_flag("--disable-blink-features=AutomationControlled"),
             normalize_chrome_flag("--disable-infobars"),
@@ -66,7 +103,13 @@ impl BrowserManager {
             builder = builder.chrome_executable(path.clone());
         }
 
-        if !config.headless {
+        // Virtual display implies headed — headless flag is ignored when xvfb is active.
+        #[cfg(target_os = "linux")]
+        let use_headless = config.headless && !config.virtual_display;
+        #[cfg(not(target_os = "linux"))]
+        let use_headless = config.headless;
+
+        if !use_headless {
             builder = builder.with_head();
         } else {
             builder = builder.new_headless_mode();
@@ -102,6 +145,8 @@ impl BrowserManager {
             healthy,
             #[cfg(target_os = "linux")]
             profile: config.profile,
+            #[cfg(target_os = "linux")]
+            xvfb,
         })
     }
 
@@ -211,6 +256,13 @@ impl BrowserManager {
                 .apply_profile(&fingerprint)
                 .await
                 .map_err(|e| ChaserError::PageFailed(format!("apply_profile: {e}")))?;
+
+            // On Linux headless, screen dimensions and navigator.plugins are
+            // zero/empty by default — a strong bot signal Cloudflare checks.
+            // Patch them to match a realistic 1920×1080 Windows desktop.
+            page.evaluate_on_new_document(LINUX_SCREEN_PATCH)
+                .await
+                .map_err(|e| ChaserError::PageFailed(format!("screen_patch: {e}")))?;
         }
 
         if url != "about:blank" {
@@ -225,7 +277,82 @@ impl BrowserManager {
 
     pub async fn shutdown(self) {
         self.healthy.store(false, Ordering::SeqCst);
+        #[cfg(target_os = "linux")]
+        if let Some(mut child) = self.xvfb {
+            let _ = child.kill();
+        }
     }
+}
+
+/// Extra `addScriptToEvaluateOnNewDocument` patch for Linux headless.
+///
+/// Chrome headless on Linux reports screen dimensions as 0×0 (or 800×600) and
+/// navigator.plugins as an empty list — both trivial bot signals. This script
+/// spoofs them to match a realistic 1920×1080 Windows desktop so the values
+/// are consistent with the Windows UA already set by `apply_profile`.
+/// Injected into every frame (including the Cloudflare Turnstile iframe).
+#[cfg(target_os = "linux")]
+const LINUX_SCREEN_PATCH: &str = r#"(function () {
+    // Screen — Linux headless defaults to 0×0 or 800×600
+    const W = 1920, H = 1080;
+    const screenDesc = (v) => ({ get: () => v, configurable: true });
+    Object.defineProperties(screen, {
+        width:       screenDesc(W),
+        height:      screenDesc(H),
+        availWidth:  screenDesc(W),
+        availHeight: screenDesc(H - 40),
+        availTop:    screenDesc(0),
+        availLeft:   screenDesc(0),
+        colorDepth:  screenDesc(24),
+        pixelDepth:  screenDesc(24),
+    });
+
+    // outerWidth/outerHeight are 0 in Linux headless=new
+    Object.defineProperty(window, 'outerWidth',  { get: () => W, configurable: true });
+    Object.defineProperty(window, 'outerHeight', { get: () => H, configurable: true });
+
+    // navigator.plugins — empty in headless, real Chrome ships with PDF Viewer
+    const makeMime = (type, desc, suffixes) =>
+        Object.assign(Object.create(MimeType.prototype), { type, description: desc, suffixes });
+    const pdfMime = makeMime('application/pdf', 'Portable Document Format', 'pdf');
+
+    const makePlugin = (name, desc, filename, mime) => {
+        const p = Object.create(Plugin.prototype);
+        Object.assign(p, { name, description: desc, filename, length: 1 });
+        p[0] = mime;
+        p.item = (i) => (i === 0 ? mime : null);
+        p.namedItem = (n) => (n === mime.type ? mime : null);
+        return p;
+    };
+    const pdfPlugin = makePlugin(
+        'PDF Viewer', 'Portable Document Format', 'internal-pdf-viewer', pdfMime
+    );
+
+    const pluginArray = Object.create(PluginArray.prototype);
+    pluginArray[0] = pdfPlugin;
+    Object.defineProperty(pluginArray, 'length', { get: () => 1 });
+    pluginArray.item       = (i)    => (i === 0 ? pdfPlugin : null);
+    pluginArray.namedItem  = (name) => (name === 'PDF Viewer' ? pdfPlugin : null);
+    pluginArray.refresh    = () => {};
+    Object.defineProperty(Navigator.prototype, 'plugins', { get: () => pluginArray, configurable: true });
+
+    const mimeArray = Object.create(MimeTypeArray.prototype);
+    mimeArray[0] = pdfMime;
+    Object.defineProperty(mimeArray, 'length', { get: () => 1 });
+    mimeArray.item      = (i)    => (i === 0 ? pdfMime : null);
+    mimeArray.namedItem = (type) => (type === 'application/pdf' ? pdfMime : null);
+    Object.defineProperty(Navigator.prototype, 'mimeTypes', { get: () => mimeArray, configurable: true });
+})();"#;
+
+/// Find the lowest unused X display number by checking /tmp/.X{n}-lock.
+#[cfg(target_os = "linux")]
+fn find_free_display() -> u32 {
+    for n in 99u32..200 {
+        if !std::path::Path::new(&format!("/tmp/.X{n}-lock")).exists() {
+            return n;
+        }
+    }
+    199
 }
 
 pub struct ContextPermit {

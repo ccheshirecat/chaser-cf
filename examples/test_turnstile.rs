@@ -12,6 +12,7 @@ fn usage() {
     eprintln!("  --timeout <ms>              Timeout in ms (default: 120000)");
     eprintln!(
         "  --no-sandbox                Run Chrome without sandbox (required when running as root)
+  --virtual-display           Start Xvfb and run Chrome headed (Linux only, requires xvfb)
   --mode <waf|min|max|all>    What to solve (default: waf)"
     );
     eprintln!();
@@ -35,6 +36,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut headless = false;
     let mut no_sandbox = false;
+    let mut virtual_display = false;
     let mut proxy_addr: Option<String> = None;
     let mut proxy_auth: Option<(String, String)> = None;
     let mut site_key: Option<String> = None;
@@ -46,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         match args[i].as_str() {
             "--headless" => headless = true,
             "--no-sandbox" => no_sandbox = true,
+            "--virtual-display" => virtual_display = true,
             "--proxy" => {
                 i += 1;
                 proxy_addr = Some(args[i].clone());
@@ -98,7 +101,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut config = ChaserConfig::default()
         .with_timeout_ms(timeout_ms)
-        .with_headless(headless);
+        .with_headless(headless)
+        .with_virtual_display(virtual_display);
     if no_sandbox {
         config = config.with_extra_args(vec!["--no-sandbox".to_string()]);
     }

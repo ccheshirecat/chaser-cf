@@ -46,6 +46,12 @@ pub struct ChaserConfig {
     ///
     /// Default: empty (chaser-cf only sets its own minimum baseline flags).
     pub extra_args: Vec<String>,
+
+    /// Spin up a virtual X display (Xvfb) and run Chrome headed inside it.
+    /// Linux only — ignored on macOS/Windows. Requires `Xvfb` to be installed
+    /// (`apt install xvfb`). Overrides `headless`: Chrome always runs headed
+    /// when a virtual display is active. Default: false.
+    pub virtual_display: bool,
 }
 
 impl Default for ChaserConfig {
@@ -60,6 +66,7 @@ impl Default for ChaserConfig {
             viewport_width: 1920,
             viewport_height: 1080,
             extra_args: Vec::new(),
+            virtual_display: false,
         }
     }
 }
@@ -111,6 +118,10 @@ impl ChaserConfig {
 
         if let Ok(val) = env::var("CHASER_EXTRA_ARGS") {
             config.extra_args = val.split_whitespace().map(|s| s.to_string()).collect();
+        }
+
+        if let Ok(val) = env::var("CHASER_VIRTUAL_DISPLAY") {
+            config.virtual_display = val.eq_ignore_ascii_case("true") || val == "1";
         }
 
         config
@@ -181,6 +192,12 @@ impl ChaserConfig {
     /// `ChaserConfig::default().add_extra_arg("--no-sandbox")`.
     pub fn add_extra_arg(mut self, arg: impl Into<String>) -> Self {
         self.extra_args.push(arg.into());
+        self
+    }
+
+    /// Builder method: enable virtual X display (Xvfb) for headed Chrome on Linux.
+    pub fn with_virtual_display(mut self, enabled: bool) -> Self {
+        self.virtual_display = enabled;
         self
     }
 
