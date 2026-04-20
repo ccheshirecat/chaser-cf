@@ -10,7 +10,8 @@ fn usage() {
     eprintln!("  --headless                  Run headless");
     eprintln!("  --site-key <key>            Turnstile site key (enables min mode)");
     eprintln!("  --timeout <ms>              Timeout in ms (default: 120000)");
-    eprintln!("  --mode <waf|min|max|all>    What to solve (default: waf)");
+    eprintln!("  --no-sandbox                Run Chrome without sandbox (required when running as root)
+  --mode <waf|min|max|all>    What to solve (default: waf)");
     eprintln!();
     eprintln!("Examples:");
     eprintln!("  test_turnstile https://stake.com");
@@ -31,6 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let url = args[1].clone();
 
     let mut headless = false;
+    let mut no_sandbox = false;
     let mut proxy_addr: Option<String> = None;
     let mut proxy_auth: Option<(String, String)> = None;
     let mut site_key: Option<String> = None;
@@ -41,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
     while i < args.len() {
         match args[i].as_str() {
             "--headless" => headless = true,
+            "--no-sandbox" => no_sandbox = true,
             "--proxy" => {
                 i += 1;
                 proxy_addr = Some(args[i].clone());
@@ -91,9 +94,12 @@ async fn main() -> anyhow::Result<()> {
         p
     });
 
-    let config = ChaserConfig::default()
+    let mut config = ChaserConfig::default()
         .with_timeout_ms(timeout_ms)
         .with_headless(headless);
+    if no_sandbox {
+        config = config.with_extra_args(vec!["--no-sandbox".to_string()]);
+    }
 
     println!("Target : {url}");
     println!("Mode   : {mode}");

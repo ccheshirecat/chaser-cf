@@ -2,7 +2,7 @@
 # Multi-stage build for minimal image size
 
 # Stage 1: Build
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 WORKDIR /app
 
@@ -69,8 +69,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/target/release/chaser-cf-server /usr/local/bin/
 
-# Copy header file if generated
-COPY --from=builder /app/include/chaser_cf.h /usr/local/include/ 2>/dev/null || true
+# Copy header file if generated (optional — silently skipped if absent)
+RUN --mount=type=bind,from=builder,source=/app,target=/builder \
+    cp /builder/include/chaser_cf.h /usr/local/include/ 2>/dev/null || true
 
 # Set Chrome path
 ENV CHROME_BIN=/usr/bin/chromium
