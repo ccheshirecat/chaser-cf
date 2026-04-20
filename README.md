@@ -27,7 +27,7 @@ Cloudflare bypass library powered by stealth browser automation. No captcha API 
 
 ```toml
 [dependencies]
-chaser-cf = { version = "0.1.6" }
+chaser-cf = { version = "0.1.7" }
 ```
 
 Requires Chrome or Chromium installed on the system.
