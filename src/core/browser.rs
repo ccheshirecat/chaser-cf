@@ -1,9 +1,13 @@
 //! Browser management for chaser-cf
 
 use crate::error::{ChaserError, ChaserResult};
+#[cfg(target_os = "linux")]
+use crate::models::Profile;
 use crate::models::ProxyConfig;
 
 use chaser_oxide::cdp::browser_protocol::target::CreateTargetParams;
+#[cfg(target_os = "linux")]
+use chaser_oxide::ChaserProfile;
 use chaser_oxide::{Browser, BrowserConfig, ChaserPage};
 use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -34,6 +38,8 @@ pub struct BrowserManager {
     active_contexts: Arc<AtomicUsize>,
     max_contexts: usize,
     healthy: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    profile: Profile,
 }
 
 impl BrowserManager {
@@ -94,6 +100,8 @@ impl BrowserManager {
             active_contexts: Arc::new(AtomicUsize::new(0)),
             max_contexts: config.context_limit,
             healthy,
+            #[cfg(target_os = "linux")]
+            profile: config.profile,
         })
     }
 
@@ -171,13 +179,39 @@ impl BrowserManager {
 
         let chaser = ChaserPage::new(page.clone());
 
-        // apply_native_profile reads the real Chrome version from the live browser UA
-        // and pairs it with the host OS + RAM, then issues Emulation.setUserAgentOverride
-        // with full userAgentMetadata so Sec-CH-UA-Platform/version are self-consistent.
+        // On macOS/Windows use native profile — Chrome version, RAM, and GPU all
+        // match the real host, which is always the most convincing fingerprint.
+        // On Linux only, override with the configured profile (default: Windows)
+        // because native Linux leaks Os::Linux into UA + Sec-CH-UA-Platform-Version.
+        #[cfg(not(target_os = "linux"))]
         chaser
             .apply_native_profile()
             .await
             .map_err(|e| ChaserError::PageFailed(format!("apply_native_profile: {e}")))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let chrome_ver = chaser_oxide::detect_chrome_version().unwrap_or(131);
+            let memory_gb = chaser_oxide::detect_system_memory_gb();
+            let fingerprint = match self.profile {
+                Profile::Windows => ChaserProfile::windows()
+                    .chrome_version(chrome_ver)
+                    .memory_gb(memory_gb)
+                    .build(),
+                Profile::Macos => ChaserProfile::macos_arm()
+                    .chrome_version(chrome_ver)
+                    .memory_gb(memory_gb)
+                    .build(),
+                Profile::Linux => ChaserProfile::linux()
+                    .chrome_version(chrome_ver)
+                    .memory_gb(memory_gb)
+                    .build(),
+            };
+            chaser
+                .apply_profile(&fingerprint)
+                .await
+                .map_err(|e| ChaserError::PageFailed(format!("apply_profile: {e}")))?;
+        }
 
         if url != "about:blank" {
             chaser
