@@ -1,3 +1,5 @@
+<a href="https://chaser.sh"><img src="banner.png" alt="Chaser — The Infrastructure Platform" width="100%"/></a>
+
 # chaser-cf
 
 [![crates.io](https://img.shields.io/crates/v/chaser-cf.svg)](https://crates.io/crates/chaser-cf)
@@ -5,6 +7,8 @@
 [![license](https://img.shields.io/crates/l/chaser-cf.svg)](LICENSE-MIT)
 
 Cloudflare bypass library powered by stealth browser automation. No captcha API tokens needed — pure browser-based challenge solving with C FFI bindings for use from any language.
+
+Built on the same stealth stack powering [chaser.sh](https://chaser.sh)'s browser fleet.
 
 ## How it works
 
@@ -229,3 +233,9 @@ lib.chaser_shutdown()
 ## License
 
 MIT OR Apache-2.0
+
+---
+
+<p align="center">
+  <sub>Part of the <a href="https://chaser.sh"><strong>Chaser</strong></a> open-source ecosystem &nbsp;·&nbsp; <a href="https://chaser.sh/sprinter">Run it on your own infrastructure →</a></sub>
+</p>
