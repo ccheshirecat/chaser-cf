@@ -8,6 +8,7 @@ mod config;
 mod solver;
 
 pub use browser::BrowserManager;
+pub use chaser_oxide::Page;
 pub use config::ChaserConfig;
 
 use crate::error::{ChaserError, ChaserResult};
@@ -120,6 +121,25 @@ impl ChaserCF {
 
         let browser = self.browser.read().await;
         browser.as_ref().map(|b| b.is_healthy()).unwrap_or(false)
+    }
+
+    /// Get page from a Cloudflare-protected URL
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - Target URL to scrape
+    /// * `proxy` - Optional proxy configuration
+    ///
+    /// # Returns
+    ///
+    /// The HTML source of the page after bypassing Cloudflare protection.
+    pub async fn get_page(&self, url: &str, proxy: Option<ProxyConfig>) -> ChaserResult<Page> {
+        let browser = self.browser().await?;
+        let manager = browser.as_ref().ok_or(ChaserError::NotInitialized)?;
+
+        tokio::time::timeout(self.config.timeout(), solver::get_page(manager, url, proxy))
+            .await
+            .map_err(|_| ChaserError::Timeout(self.config.timeout_ms))?
     }
 
     /// Get page source from a Cloudflare-protected URL
